@@ -1,0 +1,506 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>手机版爱心粒子系统</title>
+    
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            background-color: #050505;
+            overflow: hidden;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            color: white;
+            /* 防止手机端下拉刷新等默认行为 */
+            touch-action: none; 
+        }
+
+        #canvas-container {
+            position: absolute;
+            top: 0; left: 0;
+            width: 100vw;
+            height: 100vh;
+        }
+
+        canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+
+        #input_video { display: none; }
+
+        /* 移动端 UI 优化 */
+        #ui-layer {
+            position: absolute;
+            bottom: 30px; /* 放在底部方便手指点击 */
+            left: 50%;
+            transform: translateX(-50%);
+            width: 90%;
+            z-index: 10;
+            background: rgba(20, 20, 20, 0.8);
+            padding: 20px;
+            border-radius: 20px;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            backdrop-filter: blur(10px);
+            text-align: center;
+            box-sizing: border-box;
+            transition: opacity 0.5s;
+        }
+        
+        /* 交互时自动隐藏 UI */
+        body.interacting #ui-layer {
+            opacity: 0.2;
+            pointer-events: none;
+        }
+
+        h3 { margin: 0 0 10px 0; font-size: 1.2rem; color: #ff4d6d; }
+        p { margin: 0 0 15px 0; font-size: 0.9rem; opacity: 0.8; line-height: 1.5; }
+
+        .upload-btn-wrapper {
+            position: relative;
+            overflow: hidden;
+            display: inline-block;
+            width: 100%;
+        }
+
+        .btn {
+            width: 100%;
+            border: none;
+            color: white;
+            background: linear-gradient(45deg, #ff4d6d, #ff8fa3);
+            padding: 15px 0;
+            border-radius: 12px;
+            font-size: 16px;
+            font-weight: bold;
+            box-shadow: 0 4px 15px rgba(255, 77, 109, 0.4);
+        }
+
+        .upload-btn-wrapper input[type=file] {
+            font-size: 100px;
+            position: absolute;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            opacity: 0;
+        }
+
+        #loading {
+            position: absolute;
+            top: 40%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            font-size: 18px;
+            color: #ff4d6d;
+            z-index: 20;
+            background: rgba(0,0,0,0.7);
+            padding: 20px;
+            border-radius: 10px;
+            text-align: center;
+        }
+
+        #cursor-indicator {
+            position: absolute;
+            width: 40px; /* 手机上光标做大一点 */
+            height: 40px;
+            border: 3px solid #00ffcc;
+            border-radius: 50%;
+            pointer-events: none;
+            transform: translate(-50%, -50%);
+            display: none;
+            box-shadow: 0 0 15px #00ffcc;
+            z-index: 5;
+        }
+        
+        /* 错误提示 */
+        #https-warning {
+            display: none;
+            position: fixed;
+            top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0,0,0,0.9);
+            z-index: 100;
+            padding: 40px;
+            box-sizing: border-box;
+            text-align: center;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="https-warning">
+        <h2 style="color: red;">无法访问摄像头</h2>
+        <p>手机浏览器要求必须使用 <strong>HTTPS</strong> 协议才能开启摄像头。</p>
+        <p>如果你是直接打开文件，请尝试使用 GitHub Pages 或 Vercel 部署。</p>
+    </div>
+
+    <div id="ui-layer">
+        <h3>✨ 掌心相册 ✨</h3>
+        <p>
+            🖐️ 张手：散开照片<br>
+            ✊ 握拳：聚合爱心<br>
+            ☝️ 食指：移动光标查看
+        </p>
+        <div class="upload-btn-wrapper">
+            <button class="btn">📷 选择相册图片 (多选)</button>
+            <input type="file" id="file-input" multiple accept="image/*" />
+        </div>
+        <div id="status" style="margin-top:10px; font-size:12px; color:#aaa;">等待选择...</div>
+    </div>
+
+    <div id="loading">
+        正在启动摄像头与模型...<br>
+        <span style="font-size:12px; color:#fff;">(首次加载可能需要几秒)</span>
+    </div>
+
+    <div id="canvas-container">
+        <video id="input_video" playsinline></video>
+        <canvas id="output_canvas"></canvas>
+        <div id="cursor-indicator">
+            <svg width="60" height="60" style="position: absolute; top: -10px; left: -10px;">
+                <circle stroke="white" stroke-width="3" fill="transparent" r="26" cx="30" cy="30" stroke-dasharray="163" stroke-dashoffset="163" style="transition: stroke-dashoffset 0.1s linear;"/>
+            </svg>
+        </div>
+    </div>
+
+    <script>
+        // 检测 HTTPS
+        if (location.protocol !== 'https:' && location.hostname !== 'localhost' && location.hostname !== '127.0.0.1') {
+            document.getElementById('https-warning').style.display = 'block';
+        }
+
+        const videoElement = document.getElementById('input_video');
+        const canvasElement = document.getElementById('output_canvas');
+        const canvasCtx = canvasElement.getContext('2d');
+        const fileInput = document.getElementById('file-input');
+        const statusDiv = document.getElementById('status');
+        const loadingDiv = document.getElementById('loading');
+        const cursorDiv = document.getElementById('cursor-indicator');
+        const progressCircle = document.querySelector('#cursor-indicator circle');
+
+        let particles = [];
+        let images = []; 
+        let canvasWidth = window.innerWidth;
+        let canvasHeight = window.innerHeight;
+        
+        const STATE = { HEART: 'HEART', GRID: 'GRID', VIEW: 'VIEW' };
+        let currentState = STATE.HEART;
+        
+        let cursorX = 0;
+        let cursorY = 0;
+        let hoverStartTime = 0;
+        let hoveredParticleIndex = -1;
+        const HOVER_DURATION = 600; // 手机稍微长一点防止误触
+
+        // 粒子类
+        class Particle {
+            constructor(index) {
+                this.index = index;
+                this.x = canvasWidth / 2;
+                this.y = canvasHeight / 2;
+                this.targetX = this.x;
+                this.targetY = this.y;
+                this.size = 2;
+                this.targetSize = 2;
+                this.color = `hsl(${Math.random() * 60 + 330}, 80%, 60%)`;
+                this.img = null;
+                this.vx = 0;
+                this.vy = 0;
+                this.friction = 0.90; // 增加阻力，手机上动画更稳
+                this.ease = 0.1;
+            }
+
+            update() {
+                const dx = this.targetX - this.x;
+                const dy = this.targetY - this.y;
+                this.vx += dx * this.ease;
+                this.vy += dy * this.ease;
+                this.vx *= this.friction;
+                this.vy *= this.friction;
+                this.x += this.vx;
+                this.y += this.vy;
+                this.size += (this.targetSize - this.size) * 0.1;
+            }
+
+            draw(ctx) {
+                if (currentState === STATE.HEART || !this.img) {
+                    ctx.beginPath();
+                    ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2);
+                    ctx.fillStyle = this.color;
+                    ctx.fill();
+                } else {
+                    let drawSize = this.size;
+                    let drawX = this.x - drawSize / 2;
+                    let drawY = this.y - drawSize / 2;
+                    
+                    // 性能优化：手机上不使用 save/restore/clip 除非必要，直接画图
+                    if (this.index === hoveredParticleIndex) {
+                        ctx.strokeStyle = '#00ffcc';
+                        ctx.lineWidth = 4;
+                        ctx.strokeRect(drawX, drawY, drawSize, drawSize);
+                    }
+                    ctx.drawImage(this.img, drawX, drawY, drawSize, drawSize);
+                }
+            }
+        }
+
+        // 初始化粒子
+        function initParticles(count) {
+            particles = [];
+            for (let i = 0; i < count; i++) {
+                let p = new Particle(i);
+                if (images.length > 0) p.img = images[i % images.length];
+                particles.push(p);
+            }
+            calculateHeartTargets();
+        }
+
+        function calculateHeartTargets() {
+            const count = particles.length;
+            // 手机竖屏适配：根据较短边计算缩放
+            const scale = Math.min(canvasWidth, canvasHeight) / 40; 
+            const centerX = canvasWidth / 2;
+            const centerY = canvasHeight / 2 - 50; // 稍微向上移一点，避开底部UI
+
+            for (let i = 0; i < count; i++) {
+                let angle = Math.random() * Math.PI * 2;
+                let hx = 16 * Math.pow(Math.sin(angle), 3);
+                let hy = -(13 * Math.cos(angle) - 5 * Math.cos(2 * angle) - 2 * Math.cos(3 * angle) - Math.cos(4 * angle));
+                let spread = Math.sqrt(Math.random()); 
+                
+                particles[i].targetX = centerX + (hx * scale * spread);
+                particles[i].targetY = centerY + (hy * scale * spread);
+                particles[i].targetSize = Math.random() * 4 + 2; // 手机上粒子稍微大一点
+                particles[i].color = `hsla(${340 + Math.random() * 40}, 80%, 60%, 0.8)`;
+            }
+        }
+
+        function calculateGridTargets() {
+            const count = particles.length;
+            const cols = 4; // 手机固定列数，避免太小
+            const padding = 10;
+            const cellWidth = (canvasWidth - padding * 2) / cols;
+            const rows = Math.ceil(count / cols);
+            const cellHeight = cellWidth; // 正方形
+            
+            // 计算起始Y，居中显示
+            const totalHeight = rows * cellHeight;
+            let startY = 50; // 顶部留空
+
+            for (let i = 0; i < count; i++) {
+                let col = i % cols;
+                let row = Math.floor(i / cols);
+
+                particles[i].targetX = padding + col * cellWidth + cellWidth / 2;
+                particles[i].targetY = startY + row * cellHeight + cellHeight / 2;
+                particles[i].targetSize = cellWidth * 0.9;
+            }
+        }
+
+        // 图片处理
+        fileInput.addEventListener('change', async (e) => {
+            const files = Array.from(e.target.files);
+            if (files.length === 0) return;
+
+            statusDiv.textContent = `加载中...`;
+            images = [];
+            // 手机性能限制，最多处理50张
+            const MAX_IMAGES = 50; 
+            const processFiles = files.slice(0, MAX_IMAGES);
+
+            for (let file of processFiles) {
+                // 压缩图片以提升性能 (简单做法是直接加载，这里依赖 createImageBitmap 的优化)
+                try {
+                    const bitmap = await createImageBitmap(file);
+                    images.push(bitmap);
+                } catch(err) {
+                    console.log("Image load error", err);
+                }
+            }
+
+            statusDiv.textContent = `已就绪 ${images.length} 张`;
+            initParticles(images.length > 0 ? images.length : 200);
+            if(currentState === STATE.HEART) calculateHeartTargets();
+            else calculateGridTargets();
+        });
+
+        initParticles(200);
+
+        // MediaPipe 处理
+        function onResults(results) {
+            loadingDiv.style.display = 'none';
+            canvasCtx.clearRect(0, 0, canvasElement.width, canvasElement.height);
+
+            // 绘制粒子
+            if (currentState === STATE.HEART) {
+                canvasCtx.shadowBlur = 15;
+                canvasCtx.shadowColor = "rgba(255, 50, 100, 0.6)";
+            } else {
+                canvasCtx.shadowBlur = 0;
+            }
+
+            particles.forEach(p => {
+                p.update();
+                p.draw(canvasCtx);
+            });
+
+            // 手势识别
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                document.body.classList.add('interacting');
+                const landmarks = results.multiHandLandmarks[0];
+                
+                const indexTip = landmarks[8];
+                
+                // 手机前置摄像头也是镜像的，需要反转X
+                let x = (1 - indexTip.x) * canvasWidth;
+                let y = indexTip.y * canvasHeight;
+
+                cursorX += (x - cursorX) * 0.3;
+                cursorY += (y - cursorY) * 0.3;
+
+                // 简单的张手/握拳判断
+                // 计算指尖到手腕(0)的平均距离
+                const wrist = landmarks[0];
+                const tips = [8, 12, 16, 20];
+                let avgDist = 0;
+                tips.forEach(i => {
+                    let d = Math.sqrt(Math.pow(landmarks[i].x - wrist.x, 2) + Math.pow(landmarks[i].y - wrist.y, 2));
+                    avgDist += d;
+                });
+                avgDist /= 4;
+
+                // 阈值需要根据实际调整，通常张手 > 0.3, 握拳 < 0.2 (归一化坐标)
+                // 手机上距离可能会变，因为手离得近
+                const isFist = avgDist < 0.25; 
+                const isOpen = avgDist > 0.35;
+
+                if (isOpen && currentState !== STATE.GRID && currentState !== STATE.VIEW) {
+                    currentState = STATE.GRID;
+                    calculateGridTargets();
+                } else if (isFist && currentState !== STATE.HEART) {
+                    currentState = STATE.HEART;
+                    calculateHeartTargets();
+                    hoveredParticleIndex = -1;
+                }
+
+                // 光标与悬停
+                cursorDiv.style.display = 'block';
+                cursorDiv.style.left = cursorX + 'px';
+                cursorDiv.style.top = cursorY + 'px';
+
+                if (currentState === STATE.GRID || currentState === STATE.VIEW) {
+                    checkHover();
+                }
+            } else {
+                document.body.classList.remove('interacting');
+                cursorDiv.style.display = 'none';
+            }
+            
+            // View 模式顶层绘制
+            if (currentState === STATE.VIEW && hoveredParticleIndex !== -1) {
+                // 文字提示
+                canvasCtx.fillStyle = "white";
+                canvasCtx.font = "16px Arial";
+                canvasCtx.textAlign = "center";
+                canvasCtx.fillText("握拳关闭", canvasWidth/2, canvasHeight - 100);
+            }
+            
+            canvasCtx.restore();
+        }
+
+        function checkHover() {
+            let hit = false;
+            for (let i = 0; i < particles.length; i++) {
+                let p = particles[i];
+                let dx = cursorX - p.x;
+                let dy = cursorY - p.y;
+                if (Math.abs(dx) < p.size/2 && Math.abs(dy) < p.size/2) {
+                    hit = true;
+                    if (hoveredParticleIndex !== i) {
+                        hoveredParticleIndex = i;
+                        hoverStartTime = Date.now();
+                    }
+                    break;
+                }
+            }
+
+            if (!hit) {
+                hoveredParticleIndex = -1;
+                hoverStartTime = 0;
+                if(currentState === STATE.VIEW) {
+                    currentState = STATE.GRID;
+                    particles.forEach(p => calculateGridTargets()); // 恢复网格
+                }
+            } else {
+                let elapsed = Date.now() - hoverStartTime;
+                let progress = Math.min(elapsed / HOVER_DURATION, 1);
+                let offset = 163 - (163 * progress);
+                progressCircle.style.strokeDashoffset = offset;
+
+                if (elapsed > HOVER_DURATION && currentState !== STATE.VIEW) {
+                    currentState = STATE.VIEW;
+                    triggerViewMode(hoveredParticleIndex);
+                }
+            }
+            
+            if (hoveredParticleIndex === -1) {
+                progressCircle.style.strokeDashoffset = 163;
+            }
+        }
+
+        function triggerViewMode(index) {
+            let p = particles[index];
+            p.targetX = canvasWidth / 2;
+            p.targetY = canvasHeight / 2;
+            p.targetSize = Math.min(canvasWidth, canvasHeight) * 0.9;
+        }
+
+        // 启动
+        window.onload = function() {
+            canvasElement.width = window.innerWidth;
+            canvasElement.height = window.innerHeight;
+
+            const hands = new Hands({locateFile: (file) => {
+                return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+            }});
+            
+            // 手机优化：使用 Lite 模型
+            hands.setOptions({
+                maxNumHands: 1,
+                modelComplexity: 0, // 0 = Lite (快), 1 = Full (准)
+                minDetectionConfidence: 0.5,
+                minTrackingConfidence: 0.5
+            });
+            
+            hands.onResults(onResults);
+
+            const camera = new Camera(videoElement, {
+                onFrame: async () => {
+                    await hands.send({image: videoElement});
+                },
+                width: 640, // 降低分辨率以提升处理速度
+                height: 480,
+                facingMode: 'user' // 强制前置
+            });
+            camera.start();
+        };
+
+        window.onresize = function() {
+            canvasWidth = window.innerWidth;
+            canvasHeight = window.innerHeight;
+            canvasElement.width = canvasWidth;
+            canvasElement.height = canvasHeight;
+            if(currentState === STATE.HEART) calculateHeartTargets();
+            else calculateGridTargets();
+        };
+
+    </script>
+</body>
+</html>
